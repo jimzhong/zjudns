@@ -197,13 +197,13 @@ class MyResolver(BaseResolver):
                 if self.domain_match_set(domain_tuple, domain_set):
                     logging.debug("{} matched in {} list".format(request.q.qname, name))
                     reply = self.resolve_from_upstream(request, name)
-                    if reply.header.rcode == RCODE.NOERROR:
+                    if reply.header.rcode == RCODE.NOERROR and reply.rr:
                         self.cache[key] = CachedReply(reply, self.upstreams[name].get("ttl", 10))
                     break
             else:
                 logging.debug("resolve {} from default server".format(request.q.qname))
                 reply = self.resolve_from_upstream(request, 'default')
-                if reply.header.rcode == RCODE.NOERROR:
+                if reply.header.rcode == RCODE.NOERROR and reply.rr:
                     self.cache[key] = CachedReply(reply, self.upstreams['default'].get("ttl", 10))
 
         except Exception as e:
