@@ -15,19 +15,6 @@ from dnslib import DNSRecord
 
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
-class CachedReply(object):
-    '''
-    A cached DNS reply, for making replies from cache
-    '''
-    def __init__(self, reply):
-        self.reply = reply
-
-    def make_reply(self, request):
-        header = request.reply().header
-        self.reply.header = header
-        return self.reply
-
-
 class MyResolver(BaseResolver):
 
     def __init__(self, filename, cache_size=1000):
@@ -88,16 +75,26 @@ class MyResolver(BaseResolver):
             reply.header.rcode = RCODE.SERVFAIL
         return reply
 
+    def save_to_cache(self, key, reply, ttl):
+        self.redis.set(key, pickle.dumps(reply), ex=ttl)
+
+    def load_from_cache(self, key, request):
+        cached = self.redis.get(key)
+        if cached:
+            reply = pickle.loads(cached)
+            reply.header = request.reply().header
+            return reply
+        return None
+
     def resolve(self, request, handler):
         #Try to fetch from cache
         key = "{}:{}".format(request.q.qname, request.q.qtype)
         logging.debug(key)
 
-        cached = self.redis.get(key)
+        cached = self.load_from_cache(key, request)
         if cached:
-            obj = pickle.loads(cached)
-            logging.debug("Cache hit for {}".format(key))
-            return obj.make_reply(request)
+            # TODO: Add TTL adjust
+            return cached
 
         #Do actual query
         try:
@@ -107,13 +104,13 @@ class MyResolver(BaseResolver):
                     logging.debug("{} matched in {} list".format(request.q.qname, name))
                     reply = self.resolve_from_upstream(request, name)
                     if reply.header.rcode == RCODE.NOERROR and reply.rr:
-                        self.redis.set(key, pickle.dumps(CachedReply(reply)), ex=self.upstreams['default'].get("ttl", 10))
+                        self.save_to_cache(key, reply, self.upstreams[name].get("ttl", 10))
                     break
             else:
                 logging.debug("resolve {} from default server".format(request.q.qname))
                 reply = self.resolve_from_upstream(request, 'default')
                 if reply.header.rcode == RCODE.NOERROR and reply.rr:
-                    self.redis.set(key, pickle.dumps(CachedReply(reply)), ex=self.upstreams['default'].get("ttl", 10))
+                    self.save_to_cache(key, reply, self.upstreams['default'].get("ttl", 10))
 
         except Exception as e:
             logging.error(e)
