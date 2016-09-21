@@ -20,8 +20,32 @@ class MyResolver(BaseResolver):
     def __init__(self, filename, cache_size=1000):
         super().__init__()
         self.load_config(filename)
+        self.load_hosts("hosts.txt")
         # self.cache = DNSCache(cache_size)
         self.redis = redis.StrictRedis(host='localhost')
+
+    def load_hosts(self, filename):
+        self.hosts = {}
+        try:
+            with open(filename) as f:
+                for x in f.readlines():
+                    l = x.strip()
+                    if l:
+                        name, ip = l.split()
+                        self.hosts[name] = ip
+        except IOError:
+            logging.warning("Host file not found.")
+
+    def load_from_hosts(self, request):
+        matched = self.domain_match_set(request.q.qname.label, self.hosts)
+        if matched:
+            logging.debug("{} found in hosts".format(request.q.qname))
+            ip = self.hosts[matched]
+            reply = request.reply()
+            reply.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A(ip)))
+            return reply
+        else:
+            return None
 
     @staticmethod
     def load_list_from_file(filename):
@@ -60,7 +84,7 @@ class MyResolver(BaseResolver):
             # logging.debug("Checking", tmpstr)
             if tmpstr in target_set:
                 # logging.info("{} matched.".format(tmpstr))
-                return True
+                return tmpstr
         return False
 
     def resolve_from_upstream(self, request, name):
@@ -87,6 +111,12 @@ class MyResolver(BaseResolver):
         return None
 
     def resolve(self, request, handler):
+
+        if request.q.qtype == QTYPE.A:
+            reply = self.load_from_hosts(request)
+            if reply:
+                return reply
+
         #Try to fetch from cache
         key = "{}:{}".format(request.q.qname, request.q.qtype)
         logging.debug(key)
@@ -99,6 +129,7 @@ class MyResolver(BaseResolver):
         #Do actual query
         try:
             domain_tuple = request.q.qname.label
+
             for name, domain_set in self.domains.items():
                 if self.domain_match_set(domain_tuple, domain_set):
                     logging.debug("{} matched in {} list".format(request.q.qname, name))
