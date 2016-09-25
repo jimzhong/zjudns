@@ -84,13 +84,16 @@ class Server(object):
                 return tmpstr
         return False
 
-    def send_to_upstream(self, request, name):
+    def send_to_upstream(self, request, server_addr, client_addr, timeout=5):
+        self.trans_id = (self.trans_id + 1) & 0xffff
         try:
-            self.query_sock.sendto(request.pack(), (self.upstreams[name]['server'], self.upstreams[name].get('port', 53)))
-        except socket.error:
-            pass
+            self.waiting[(self.trans_id, server_addr)] = (request, client_addr, time.time()+timeout)
+            request.header.id = self.trans_id
+            self.query_sock.sendto(request.pack(), server_addr)
+        except socket.error as e:
+            logging.error(e)
 
-    def save_to_cache(self, key, reply, ttl):
+    def save_to_cache(self, key, reply):
         self.redis.set(key, pickle.dumps(reply), ex=ttl)
 
     def load_from_cache(self, key, request):
@@ -101,7 +104,14 @@ class Server(object):
             return reply
         return None
 
-    def resolve(self, request):
+    def handle_client_request(self, data, addr):
+
+        try:
+            request = DNSRecord.parse(data)
+        except Exception as e:
+            logging.error(e)
+
+        logging.debug("{} from {}".format(request.q, addr))
 
         if request.q.qtype == QTYPE.A:
             reply = self.load_from_hosts(request)
@@ -110,7 +120,6 @@ class Server(object):
 
         #Try to fetch from cache
         key = "{}:{}".format(request.q.qname, request.q.qtype)
-        logging.debug(key)
 
         cached = self.load_from_cache(key, request)
         if cached:
@@ -124,25 +133,20 @@ class Server(object):
             for name, domain_set in self.domains.items():
                 if self.domain_match_set(domain_tuple, domain_set):
                     logging.debug("{} matched in {} list".format(request.q.qname, name))
-                    self.send_to_upstream(request, name)
+                    self.send_to_upstream(request, (self.upstream[name]['server'], self.upstream[name].get(port, 53))),
+                                          addr, self.upstream[name].get("timeout", 5))
                     break
             else:
                 logging.debug("resolve {} from default server".format(request.q.qname))
-                self.send_to_upstream(request, 'default')
+                self.send_to_upstream(request, (self.upstream[name]['server'], self.upstream[name].get(port, 53)),
+                                      addr, self.upstream[name].get("timeout", 5))
 
         except Exception as e:
             logging.error(e)
-            reply = request.reply()
-            reply.header.rcode = RCODE.SERVFAIL
-            return reply
 
 
-    def sweep_waiting_list(self):
-        tmplist = []
-        now = time.time()
-        for k, v in self.waiting.items():
-            if now - v[2] > 5:
-                fail = v[3].reply()
+#TODO: fix this
+
                 fail.header.rcode = RCODE.SERVFAIL
                 fail.header.id = v[1]
                 self.server_sock.sendto(fail.pack(), v[0])
@@ -157,46 +161,35 @@ class Server(object):
         self.server_sock.bind(("", 1053))
         self.query_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.waiting = {}
-        trans_id = 1
+        self.trans_id = 0
         while True:
             readable, _, _ = select.select([self.server_sock, self.query_sock], [], [], 1)
             if self.server_sock in readable:
                 data, addr = self.server_sock.recvfrom(1024)
-                try:
-                    query = DNSRecord.parse(data)
-                except Exception as e:
-                    logging.error(e)
-                    continue
-                old_id = query.header.id
-                query.header.id = trans_id
-                trans_id = (trans_id + 1) & 0xffff
-                reply = self.resolve(query)
-                if reply:
-                    reply.header.id = old_id
-                    self.server_sock.sendto(reply.pack(), addr)
-                else:
-                    self.waiting[query.header.id] = (addr, old_id, time.time(), query)
+                self.handle_client_request(data, addr)
 
             if self.query_sock in readable:
                 data, addr = self.query_sock.recvfrom(1024)
-                try:
-                    reply = DNSRecord.parse(data)
-                except Exception as e:
-                    logging.error(e)
-                    continue
-                if reply.header.id in self.waiting:
-                    info = self.waiting.pop(reply.header.id)
-                    reply.header.id = info[1]
-                    if reply.header.rcode == RCODE.NOERROR:
-                        key = "{}:{}".format(info[3].q.qname, info[3].q.qtype)
-                        logging.debug("add {} to cache".format(key))
-                        self.redis.set(key, pickle.dumps(reply), ex=60)
-                    try:
-                        self.server_sock.sendto(reply.pack(), info[0])
-                    except:
-                        pass
 
-            self.sweep_waiting_list()
+
+    def handle_server_reply(self, data, addr):
+        try:
+            reply = DNSRecord.parse(data)
+        except Exception as e:
+            logging.error(e)
+
+        if (reply.header.id, addr) in self.waiting:
+            info = self.waiting.pop((reply.header.id, addr))
+            reply.header.id = info[0].header.id
+            if reply.header.rcode == RCODE.NOERROR:
+                key = "{}:{}".format(info[0].q.qname, info[0].q.qtype)
+                logging.debug("add {} to cache".format(key))
+                self.redis.set(key, pickle.dumps(reply), ex=60)
+            try:
+                self.server_sock.sendto(reply.pack(), info[1])
+            except Exception as e:
+                logging.error(e)
+
 
 if __name__ == '__main__':
     server = Server("config.json")
