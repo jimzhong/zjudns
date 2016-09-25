@@ -130,7 +130,7 @@ class Server(object):
         if request.q.qtype not in ALLOWED_QTYPE:
             logging.info("not allowed qtype of {}".format(request.q.qtype))
             reply = request.reply()
-            reply.header.rcode = RCODE.SERVFAIL
+            reply.header.rcode = RCODE.REFUSED
             self.send_reply_to(reply, addr)
             return
 
