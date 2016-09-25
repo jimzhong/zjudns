@@ -10,6 +10,7 @@ import redis
 import pickle
 import socket
 import select
+import random
 # from dnslib.server import DNSServer, BaseResolver, DNSLogger
 from dnslib.dns import DNSError, QTYPE, RCODE, RR, A
 from dnslib import DNSRecord
@@ -99,7 +100,8 @@ class Server(object):
                                                           request.header.id)
             request.header.id = self.trans_id
             logging.debug("sending {} to {}".format(request.q.qname, server_addr))
-            self.query_sock.sendto(request.pack(), server_addr)
+            k = random.choice(self.query_sock_pool)
+            k.sendto(request.pack(), server_addr)
         except socket.error as e:
             logging.error(e)
 
@@ -187,21 +189,31 @@ class Server(object):
             self.waiting.pop(x)
 
 
-    def serve_forever(self):
+    def serve_forever(self, pool_size=10):
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.server_sock.bind(("", 1053))
-        self.query_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.query_sock_pool = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(pool_size)]
         self.waiting = {}
         self.trans_id = 0
-        while True:
-            readable, _, _ = select.select([self.server_sock, self.query_sock], [], [], 1)
-            if self.server_sock in readable:
-                data, addr = self.server_sock.recvfrom(1024)
-                self.handle_client_request(data, addr)
 
-            if self.query_sock in readable:
-                data, addr = self.query_sock.recvfrom(4096)
-                self.handle_server_reply(data, addr)
+        epoll = select.epoll()
+        epoll.register(self.server_sock, select.EPOLLIN)
+        for x in self.query_sock_pool:
+            epoll.register(x, select.EPOLLIN)
+
+        while True:
+            events = epoll.poll(timeout=1)
+            # logging.debug(events)
+            for fd, event in events:
+                if fd == self.server_sock.fileno():
+                    data, addr = self.server_sock.recvfrom(1024)
+                    self.handle_client_request(data, addr)
+
+                for sock in self.query_sock_pool:
+                    if sock.fileno() == fd:
+                        data, addr = sock.recvfrom(4096)
+                        self.handle_server_reply(data, addr)
+                        break
 
             self.sweep_waiting_list()
 
