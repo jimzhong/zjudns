@@ -22,10 +22,10 @@ class Server(object):
 
     def __init__(self, filename):
         self.load_config(filename)
-        self.load_hosts("hosts.txt")
+        self.load_hosts_file("hosts.txt")
         self.redis = redis.StrictRedis(host='localhost')
 
-    def load_hosts(self, filename):
+    def load_hosts_file(self, filename):
         self.hosts = {}
         try:
             with open(filename) as f:
@@ -33,14 +33,15 @@ class Server(object):
                     l = x.strip()
                     if l:
                         name, ip = l.split()
-                        self.hosts[name] = ip
+                        self.hosts[tuple(reversed(name.split(".")))] = ip
         except IOError:
             logging.warning("Host file not found.")
+        logging.debug(self.hosts)
 
     def load_from_hosts(self, request):
         matched = self.domain_match_set(request.q.qname.label, self.hosts)
         if matched:
-            logging.debug("{} found in hosts".format(request.q.qname))
+            # logging.debug("{} found in hosts".format(request.q.qname))
             ip = self.hosts[matched]
             reply = request.reply()
             reply.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A(ip)))
@@ -52,14 +53,15 @@ class Server(object):
     def load_list_from_file(filename):
         '''
         File contains multiple lines of domain names
-        The return value is a Set
+        The return value is a Set of tuples
         '''
         ret = set()
         with open(filename) as f:
             for x in f.readlines():
                 l = x.strip()
                 if l:
-                    ret.add(l)
+                    ret.add(tuple(reversed(l.split("."))))
+        # logging.debug(ret)
         return ret
 
     def load_config(self, filename):
@@ -74,16 +76,16 @@ class Server(object):
 
     @staticmethod
     def domain_match_set(domain_tuple, target_set, depth=5):
-        tmpstr = None
-        # logging.debug(domain_tuple)
-        for x in reversed(domain_tuple[-depth:]):
-            if not tmpstr:
-                tmpstr = x.decode().lower()
-            else:
-                tmpstr = x.decode().lower()+"."+tmpstr
-            if tmpstr in target_set:
-                # logging.info("{} matched.".format(tmpstr))
-                return tmpstr
+        try:
+            rv = tuple(map(bytes.decode, reversed(domain_tuple)))
+            for l in range(1, depth):
+                k = rv[0:l]
+                if k in target_set:
+                    logging.debug("{} matched".format(k))
+                    return k
+        except Exception as e:
+            logging.error(e)
+            return False
         return False
 
     def send_to_upstream(self, request, name, client_addr):
