@@ -179,7 +179,7 @@ class Server(object):
                 fail.header.id = v[4]
                 fail.header.rcode = RCODE.SERVFAIL
                 self.server_sock.sendto(fail.pack(), v[1])
-                logging.warning("{} timed out for".format(k, v[0].q.qname))
+                logging.warning("{} timed out for {}".format(k, v[0].q.qname))
                 tmplist.append(k)
         for x in tmplist:
             self.waiting.pop(x)
