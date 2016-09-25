@@ -9,19 +9,18 @@ import json
 import redis
 import pickle
 import socket
-from dnslib.server import DNSServer, BaseResolver, DNSLogger
+import select
+# from dnslib.server import DNSServer, BaseResolver, DNSLogger
 from dnslib.dns import DNSError, QTYPE, RCODE, RR, A
 from dnslib import DNSRecord
 
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
-class MyResolver(BaseResolver):
+class Server(object):
 
-    def __init__(self, filename, cache_size=1000):
-        super().__init__()
+    def __init__(self, filename):
         self.load_config(filename)
         self.load_hosts("hosts.txt")
-        # self.cache = DNSCache(cache_size)
         self.redis = redis.StrictRedis(host='localhost')
 
     def load_hosts(self, filename):
@@ -80,24 +79,16 @@ class MyResolver(BaseResolver):
                 tmpstr = x.decode().lower()
             else:
                 tmpstr = x.decode().lower()+"."+tmpstr
-            # print(tmpstr)
-            # logging.debug("Checking", tmpstr)
             if tmpstr in target_set:
                 # logging.info("{} matched.".format(tmpstr))
                 return tmpstr
         return False
 
-    def resolve_from_upstream(self, request, name):
+    def send_to_upstream(self, request, name):
         try:
-            r = request.send(self.upstreams[name]['server'],
-                             self.upstreams[name].get('port', 53),
-                             timeout=self.upstreams[name].get('timeout', 1))
-            reply = DNSRecord.parse(r)
-        except socket.timeout:
-            logging.warning("{} timed out for {}".format(self.upstreams[name]['server'], request.q.qname))
-            reply = request.reply()
-            reply.header.rcode = RCODE.SERVFAIL
-        return reply
+            self.query_sock.sendto(request.pack(), (self.upstreams[name]['server'], self.upstreams[name].get('port', 53)))
+        except socket.error:
+            pass
 
     def save_to_cache(self, key, reply, ttl):
         self.redis.set(key, pickle.dumps(reply), ex=ttl)
@@ -110,7 +101,7 @@ class MyResolver(BaseResolver):
             return reply
         return None
 
-    def resolve(self, request, handler):
+    def resolve(self, request):
 
         if request.q.qtype == QTYPE.A:
             reply = self.load_from_hosts(request)
@@ -133,33 +124,80 @@ class MyResolver(BaseResolver):
             for name, domain_set in self.domains.items():
                 if self.domain_match_set(domain_tuple, domain_set):
                     logging.debug("{} matched in {} list".format(request.q.qname, name))
-                    reply = self.resolve_from_upstream(request, name)
-                    if reply.header.rcode == RCODE.NOERROR and reply.rr:
-                        self.save_to_cache(key, reply, self.upstreams[name].get("ttl", 10))
+                    self.send_to_upstream(request, name)
                     break
             else:
                 logging.debug("resolve {} from default server".format(request.q.qname))
-                reply = self.resolve_from_upstream(request, 'default')
-                if reply.header.rcode == RCODE.NOERROR and reply.rr:
-                    self.save_to_cache(key, reply, self.upstreams['default'].get("ttl", 10))
+                self.send_to_upstream(request, 'default')
 
         except Exception as e:
             logging.error(e)
             reply = request.reply()
             reply.header.rcode = RCODE.SERVFAIL
-        return reply
+            return reply
 
 
-class MyDNSLogger(DNSLogger):
+    def sweep_waiting_list(self):
+        tmplist = []
+        now = time.time()
+        for k, v in self.waiting.items():
+            if now - v[2] > 5:
+                fail = v[3].reply()
+                fail.header.rcode = RCODE.SERVFAIL
+                fail.header.id = v[1]
+                self.server_sock.sendto(fail.pack(), v[0])
+                logging.warning("#{} timed out".format(k))
+                tmplist.append(k)
+        for x in tmplist:
+            self.waiting.pop(x)
 
-    def log_request(self, handler, request):
-        logging.info("{} requests {}".format(handler.client_address[0], request.q.qname))
 
-myresolver = MyResolver("config.json")
-dns_server = DNSServer(myresolver, port=1053, logger=MyDNSLogger("request"))
+    def serve_forever(self):
+        self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.server_sock.bind(("", 1053))
+        self.query_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.waiting = {}
+        trans_id = 1
+        while True:
+            readable, _, _ = select.select([self.server_sock, self.query_sock], [], [], 1)
+            if self.server_sock in readable:
+                data, addr = self.server_sock.recvfrom(1024)
+                try:
+                    query = DNSRecord.parse(data)
+                except Exception as e:
+                    logging.error(e)
+                    continue
+                old_id = query.header.id
+                query.header.id = trans_id
+                trans_id = (trans_id + 1) & 0xffff
+                reply = self.resolve(query)
+                if reply:
+                    reply.header.id = old_id
+                    self.server_sock.sendto(reply.pack(), addr)
+                else:
+                    self.waiting[query.header.id] = (addr, old_id, time.time(), query)
 
-def main():
-    dns_server.start()
+            if self.query_sock in readable:
+                data, addr = self.query_sock.recvfrom(1024)
+                try:
+                    reply = DNSRecord.parse(data)
+                except Exception as e:
+                    logging.error(e)
+                    continue
+                if reply.header.id in self.waiting:
+                    info = self.waiting.pop(reply.header.id)
+                    reply.header.id = info[1]
+                    if reply.header.rcode == RCODE.NOERROR:
+                        key = "{}:{}".format(info[3].q.qname, info[3].q.qtype)
+                        logging.debug("add {} to cache".format(key))
+                        self.redis.set(key, pickle.dumps(reply), ex=60)
+                    try:
+                        self.server_sock.sendto(reply.pack(), info[0])
+                    except:
+                        pass
+
+            self.sweep_waiting_list()
 
 if __name__ == '__main__':
-    main()
+    server = Server("config.json")
+    server.serve_forever()
