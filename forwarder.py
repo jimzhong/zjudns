@@ -92,7 +92,7 @@ class Server(object):
     def send_to_upstream(self, request, name, client_addr):
         self.trans_id = (self.trans_id + 1) & 0xffff
         try:
-            server_addr = (self.upstreams[name]['server'], self.upstreams.get('port', 53))
+            server_addr = (self.upstreams[name]['server'], self.upstreams[name].get('port', 53))
             self.waiting[(self.trans_id, server_addr)] = (request,
                                                           client_addr,
                                                           time.time() + self.upstreams[name].get('timeout', 5),
