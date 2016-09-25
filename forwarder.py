@@ -14,6 +14,8 @@ import select
 from dnslib.dns import DNSError, QTYPE, RCODE, RR, A
 from dnslib import DNSRecord
 
+ALLOWED_QTYPE = (QTYPE.A, QTYPE.AAAA, QTYPE.MX, QTYPE.CNAME, QTYPE.NS, QTYPE.SRV)
+
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
 class Server(object):
@@ -84,11 +86,17 @@ class Server(object):
                 return tmpstr
         return False
 
-    def send_to_upstream(self, request, server_addr, client_addr, timeout=5):
+    def send_to_upstream(self, request, name, client_addr):
         self.trans_id = (self.trans_id + 1) & 0xffff
         try:
-            self.waiting[(self.trans_id, server_addr)] = (request, client_addr, time.time()+timeout)
+            server_addr = (self.upstreams[name]['server'], self.upstreams.get('port', 53))
+            self.waiting[(self.trans_id, server_addr)] = (request,
+                                                          client_addr,
+                                                          time.time() + self.upstreams[name].get('timeout', 5),
+                                                          self.upstreams[name].get('ttl', 60),
+                                                          request.header.id)
             request.header.id = self.trans_id
+            logging.debug("sending {} to {}".format(request.q.qname, server_addr))
             self.query_sock.sendto(request.pack(), server_addr)
         except socket.error as e:
             logging.error(e)
@@ -104,6 +112,12 @@ class Server(object):
             return reply
         return None
 
+    def send_reply_to(self, reply, addr):
+        try:
+            self.server_sock.sendto(reply.pack(), addr)
+        except Exception as e:
+            logging.error(e)
+
     def handle_client_request(self, data, addr):
 
         try:
@@ -111,46 +125,61 @@ class Server(object):
         except Exception as e:
             logging.error(e)
 
-        logging.debug("{} from {}".format(request.q, addr))
+        logging.debug("request for {} from {}".format(request.q.qname, addr))
+
+        if request.q.qtype not in ALLOWED_QTYPE:
+            logging.debug("not allowed qtype")
+            reply = request.reply()
+            reply.header.rcode = RCODE.SERVFAIL
+            self.send_reply_to(reply, addr)
+            return
 
         if request.q.qtype == QTYPE.A:
             reply = self.load_from_hosts(request)
             if reply:
-                return reply
+                logging.debug("found {} in hosts".format(request.q.qname))
+                self.send_reply_to(reply, addr)
+                return
 
         #Try to fetch from cache
-        key = "{}:{}".format(request.q.qname, request.q.qtype)
+        key = "dns:{}:{}".format(request.q.qname, request.q.qtype)
 
         cached = self.load_from_cache(key, request)
         if cached:
             # TODO: Add TTL adjust
-            return cached
+            logging.debug("cache hit on {}".format(request.q.qname))
+            self.send_reply_to(cached, addr)
+            return
 
-        #Do actual query
+        #Do actual query based on qname
         try:
             domain_tuple = request.q.qname.label
-
             for name, domain_set in self.domains.items():
                 if self.domain_match_set(domain_tuple, domain_set):
                     logging.debug("{} matched in {} list".format(request.q.qname, name))
-                    self.send_to_upstream(request, (self.upstream[name]['server'], self.upstream[name].get(port, 53))),
-                                          addr, self.upstream[name].get("timeout", 5))
+                    self.send_to_upstream(request, name, addr)
                     break
             else:
                 logging.debug("resolve {} from default server".format(request.q.qname))
-                self.send_to_upstream(request, (self.upstream[name]['server'], self.upstream[name].get(port, 53)),
-                                      addr, self.upstream[name].get("timeout", 5))
+                self.send_to_upstream(request, 'default', addr)
 
         except Exception as e:
             logging.error(e)
+            reply = request.reply()
+            reply.header.rcode = RCODE.SERVFAIL
+            self.send_reply_to(reply, addr)
 
 
-#TODO: fix this
-
+    def sweep_waiting_list(self):
+        tmplist = []
+        now = time.time()
+        for k, v in self.waiting.items():
+            if now > v[2]:
+                fail = v[0].reply()
+                fail.header.id = v[4]
                 fail.header.rcode = RCODE.SERVFAIL
-                fail.header.id = v[1]
-                self.server_sock.sendto(fail.pack(), v[0])
-                logging.warning("#{} timed out".format(k))
+                self.server_sock.sendto(fail.pack(), v[1])
+                logging.warning("{} timed out".format(k))
                 tmplist.append(k)
         for x in tmplist:
             self.waiting.pop(x)
@@ -169,7 +198,10 @@ class Server(object):
                 self.handle_client_request(data, addr)
 
             if self.query_sock in readable:
-                data, addr = self.query_sock.recvfrom(1024)
+                data, addr = self.query_sock.recvfrom(4096)
+                self.handle_server_reply(data, addr)
+
+            self.sweep_waiting_list()
 
 
     def handle_server_reply(self, data, addr):
@@ -178,17 +210,17 @@ class Server(object):
         except Exception as e:
             logging.error(e)
 
+        logging.debug("reply for {} from {}".format(reply.q.qname, addr))
+
         if (reply.header.id, addr) in self.waiting:
             info = self.waiting.pop((reply.header.id, addr))
-            reply.header.id = info[0].header.id
+            reply.header.id = info[4]
+            self.send_reply_to(reply, info[1])
             if reply.header.rcode == RCODE.NOERROR:
-                key = "{}:{}".format(info[0].q.qname, info[0].q.qtype)
-                logging.debug("add {} to cache".format(key))
-                self.redis.set(key, pickle.dumps(reply), ex=60)
-            try:
-                self.server_sock.sendto(reply.pack(), info[1])
-            except Exception as e:
-                logging.error(e)
+                # Cache positive result
+                key = "dns:{}:{}".format(info[0].q.qname, info[0].q.qtype)
+                logging.debug("add {} to cache, ttl={}".format(key, info[3]))
+                self.redis.set(key, pickle.dumps(reply), ex=info[3])
 
 
 if __name__ == '__main__':
