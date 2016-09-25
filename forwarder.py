@@ -125,10 +125,10 @@ class Server(object):
         except Exception as e:
             logging.error(e)
 
-        logging.debug("request for {} from {}".format(request.q.qname, addr))
+        logging.info("request for {} from {}".format(request.q.qname, addr))
 
         if request.q.qtype not in ALLOWED_QTYPE:
-            logging.debug("not allowed qtype")
+            logging.info("not allowed qtype of {}".format(request.q.qtype))
             reply = request.reply()
             reply.header.rcode = RCODE.SERVFAIL
             self.send_reply_to(reply, addr)
@@ -137,7 +137,7 @@ class Server(object):
         if request.q.qtype == QTYPE.A:
             reply = self.load_from_hosts(request)
             if reply:
-                logging.debug("found {} in hosts".format(request.q.qname))
+                logging.info("found {} in hosts".format(request.q.qname))
                 self.send_reply_to(reply, addr)
                 return
 
@@ -147,7 +147,7 @@ class Server(object):
         cached = self.load_from_cache(key, request)
         if cached:
             # TODO: Add TTL adjust
-            logging.debug("cache hit on {}".format(request.q.qname))
+            logging.info("cache hit on {}".format(request.q.qname))
             self.send_reply_to(cached, addr)
             return
 
@@ -210,7 +210,7 @@ class Server(object):
         except Exception as e:
             logging.error(e)
 
-        logging.debug("reply for {} from {}".format(reply.q.qname, addr))
+        logging.info("reply for {} from {}".format(reply.q.qname, addr))
 
         if (reply.header.id, addr) in self.waiting:
             info = self.waiting.pop((reply.header.id, addr))
