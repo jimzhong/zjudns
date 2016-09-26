@@ -1,6 +1,6 @@
 # zjudns
 DNS forwarder for use in ZJU
 
-Please see `config.json` for examples of configuration
+Please see `dns.conf` for an example of configuration.
 
 Requires redis
