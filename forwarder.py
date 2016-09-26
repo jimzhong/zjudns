@@ -223,6 +223,7 @@ class Server(object):
             reply = DNSRecord.parse(data)
         except Exception as e:
             logging.error(e)
+            return
 
         logging.info("reply for {} from {}".format(reply.q.qname, addr))
 
