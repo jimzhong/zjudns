@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import time
+import sys
 import logging
 import configparser
 import redis
@@ -48,14 +49,27 @@ class Server(object):
         return ret
 
     def load_config(self, filename):
-        config = configparser.ConfigParser()
-        config.read(filename)
 
+        try:
+            f = open(filename)
+            f.close()
+        except:
+            logging.error("{} does not exist".format(filename))
+            sys.exit(-1)
+
+        config = configparser.ConfigParser()
+        try:
+            config.read(filename)
+        except:
+            logging.error("error loading config from {}".format(filename))
+            sys.exit(-2)
+
+        # reset logging level
         logging.getLogger().setLevel(getattr(logging, config['global']['log_level']))
+
         self.load_hosts_file(config['global']['hosts_file'])
         self.allowed_qtype = tuple(getattr(QTYPE, x) for x in map(str.strip, config['global']['allowed_qtype'].split(",")))
         self.server_port = int(config['global'].get('port', 1053))
-        # print(self.allowed_qtype)
 
         self.upstreams = {}
         for x in config.sections():
