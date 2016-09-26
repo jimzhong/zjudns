@@ -1,5 +1,0 @@
-{
-"internal": {"file": "internal.txt", "servers": [["10.10.0.21", 53]], "ttl": 600000},
-"default": {"servers": [["10.10.0.21", 53], ["223.5.5.5", 53]], "ttl": 60},
-"blocked": {"file": "blocked.txt", "port": 53, "servers": [["10.10.0.21", 53]], "ttl": 600}
-}
