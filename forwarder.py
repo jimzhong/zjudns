@@ -66,8 +66,7 @@ class Server(object):
 
         # reset logging level
         logging.getLogger().setLevel(getattr(logging, config['global']['log_level']))
-
-        self.load_hosts_file(config['global']['hosts_file'])
+        self.load_hosts_file(config['global'].get('hosts_file', '/dev/null'))
         self.allowed_qtype = tuple(getattr(QTYPE, x) for x in map(str.strip, config['global']['allowed_qtype'].split(",")))
         self.server_port = int(config['global'].get('port', 1053))
 
