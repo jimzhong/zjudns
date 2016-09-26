@@ -88,14 +88,15 @@ class Server(object):
         self.domains = {}
         for name, val in self.upstreams.items():
             if name != 'default':
-                self.domains[name] = self.load_list_from_file(val["file"])
-                logging.info("loaded {} domains from {}".format(len(self.domains[name]), val["file"]))
+                tmpset = self.load_list_from_file(val["file"])
+                for x in tmpset:
+                    self.domains[x] = name
+                logging.info("loaded {} domains from {}".format(len(tmpset), val["file"]))
 
     def load_from_hosts(self, request):
-        matched = self.domain_match_set(request.q.qname.label, self.hosts)
-        if matched:
+        ip = self.match_domain_in_dict(request.q.qname.label, self.hosts)
+        if ip:
             # logging.debug("{} found in hosts".format(request.q.qname))
-            ip = self.hosts[matched]
             reply = request.reply()
             reply.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A(ip)))
             return reply
@@ -115,18 +116,21 @@ class Server(object):
         self.redis.set(key, pickle.dumps(reply), ex=ttl)
 
     @staticmethod
-    def domain_match_set(domain_tuple, target_set, depth=5):
+    def match_domain_in_dict(domain_tuple, target_dict, depth=5):
+        '''
+        If the domain is in target_dict, return the corresponding value, else return None
+        '''
         try:
             rv = tuple(map(bytes.decode, reversed(domain_tuple)))
             for l in range(1, depth):
                 k = rv[0:l]
-                if k in target_set:
+                if k in target_dict:
                     logging.debug("{} matched".format(k))
-                    return k
+                    return target_dict[k]
         except Exception as e:
             logging.error(e)
-            return False
-        return False
+            return None
+        return None
 
     def get_random_server_addr(self, name):
         return tuple(random.choice(self.upstreams[name]['servers']))
@@ -140,11 +144,12 @@ class Server(object):
                                                           time.time() + self.upstreams[name].get('timeout', 5),
                                                           self.upstreams[name].get('ttl', 60),
                                                           request.header.id)
+            # reassign trans_id to void collision, assign back in reply handler
             request.header.id = self.trans_id
             logging.debug("sending {} to {}".format(request.q.qname, server_addr))
             k = random.choice(self.query_sock_pool)
             k.sendto(request.pack(), server_addr)
-        except socket.error as e:
+        except Exception as e:
             logging.error(e)
 
     def send_reply_to(self, reply, addr):
@@ -185,15 +190,13 @@ class Server(object):
 
         #Do actual query based on qname
         try:
-            domain_tuple = request.q.qname.label
-            for name, domain_set in self.domains.items():
-                if self.domain_match_set(domain_tuple, domain_set):
-                    logging.debug("{} matched in {} list".format(request.q.qname, name))
-                    self.send_to_upstream(request, name, addr)
-                    break
-            else:
+            upstream_name = self.match_domain_in_dict(request.q.qname.label, self.domains)
+            if upstream_name is None:
                 logging.debug("resolve {} from default server".format(request.q.qname))
                 self.send_to_upstream(request, 'default', addr)
+            else:
+                logging.debug("resolve {} from {}".format(request.q.qname, upstream_name))
+                self.send_to_upstream(request, upstream_name, addr)
         except Exception as e:
             logging.error(e)
             reply = request.reply()
