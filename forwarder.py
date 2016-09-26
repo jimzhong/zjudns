@@ -89,10 +89,13 @@ class Server(object):
             return False
         return False
 
+    def get_random_server_addr(self, name):
+        return tuple(random.choice(self.upstreams[name]['servers']))
+
     def send_to_upstream(self, request, name, client_addr):
         self.trans_id = (self.trans_id + 1) & 0xffff
         try:
-            server_addr = (self.upstreams[name]['server'], self.upstreams[name].get('port', 53))
+            server_addr = self.get_random_server_addr(name)
             self.waiting[(self.trans_id, server_addr)] = (request,
                                                           client_addr,
                                                           time.time() + self.upstreams[name].get('timeout', 5),
@@ -189,12 +192,15 @@ class Server(object):
             self.waiting.pop(x)
 
 
-    def serve_forever(self, pool_size=10):
+    def serve_forever(self, pool_size=4):
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.server_sock.bind(("", 1053))
         self.query_sock_pool = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(pool_size)]
         self.waiting = {}
+        # key is (trans_id, server_addr), value is (request, client_addr, old_trans_id, timeout)
         self.trans_id = 0
+        # self.stat = {}
+        # for gathering statistics, key is server_addr(as a tuple), value is (timeout count, request count)
 
         epoll = select.epoll()
         epoll.register(self.server_sock, select.EPOLLIN)
