@@ -256,6 +256,7 @@ class Server(object):
             for fd, event in events:
                 if fd == self.server_sock.fileno():
                     data, addr = self.server_sock.recvfrom(1024)
+                    self.redis.set("dnsclient:{}".format(addr[0]), 1, ex=10)
                     self.handle_client_request(data, addr)
 
                 for sock in self.query_sock_pool:
