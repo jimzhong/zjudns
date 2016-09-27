@@ -13,6 +13,8 @@ import argparse
 from dnslib.dns import DNSError, QTYPE, RCODE, RR, A
 from dnslib import DNSRecord
 
+from ratelimit import RateLimit
+
 logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
 class Server(object):
@@ -239,6 +241,8 @@ class Server(object):
 
     def serve_forever(self, pool_size=10):
         self.redis = redis.StrictRedis(unix_socket_path=self.redis_unixsocket)
+
+        self.limiter = RateLimit(self.redis, "dns", max_requests=50, expire=3)
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.server_sock.bind(("", self.server_port))
         self.query_sock_pool = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(pool_size)]
@@ -260,8 +264,10 @@ class Server(object):
             for fd, event in events:
                 if fd == self.server_sock.fileno():
                     data, addr = self.server_sock.recvfrom(1024)
-                    self.redis.set("dnsclient:{}".format(addr[0]), 1, ex=10)
-                    self.handle_client_request(data, addr)
+                    if self.limiter.consume(addr[0]):
+                        self.handle_client_request(data, addr)
+                    else:
+                        logging.warning("{} exceeded ratelimit".format(addr[0]))
 
                 for sock in self.query_sock_pool:
                     if sock.fileno() == fd:
