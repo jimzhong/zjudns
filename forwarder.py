@@ -69,6 +69,7 @@ class Server(object):
         self.load_hosts_file(config['global'].get('hosts_file', '/dev/null'))
         self.allowed_qtype = tuple(getattr(QTYPE, x) for x in map(str.strip, config['global']['allowed_qtype'].split(",")))
         self.server_port = int(config['global'].get('port', 1053))
+        self.redis_unixsocket = config['global']['unixsocket']
 
         self.upstreams = {}
         for x in config.sections():
@@ -237,7 +238,7 @@ class Server(object):
                 self.redis.set(key, pickle.dumps(reply), ex=info[3])
 
     def serve_forever(self, pool_size=10):
-        self.redis = redis.StrictRedis(host='localhost')
+        self.redis = redis.StrictRedis(unix_socket_path=self.redis_unixsocket)
         self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.server_sock.bind(("", self.server_port))
         self.query_sock_pool = [socket.socket(socket.AF_INET, socket.SOCK_DGRAM) for _ in range(pool_size)]
