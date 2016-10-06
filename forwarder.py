@@ -29,9 +29,9 @@ class Server(object):
                 for x in f.readlines():
                     l = x.strip()
                     if l:
-                        name, ip = l.split()
-                        logging.info("redirect {} to {}".format(name, ip))
-                        self.hosts[tuple(reversed(name.split(".")))] = ip
+                        name, ips = l.split(maxsplit=1)
+                        logging.info("redirect {} to {}".format(name, ips))
+                        self.hosts[tuple((name.split(".")))] = tuple(map(str.strip, ips.split(",")))
         except IOError:
             logging.warning("Host file not found.")
 
@@ -46,7 +46,7 @@ class Server(object):
             for x in f.readlines():
                 l = x.strip()
                 if l:
-                    ret.add(tuple(reversed(l.split("."))))
+                    ret.add(tuple(l.split(".")))
         # logging.debug(ret)
         return ret
 
@@ -97,11 +97,12 @@ class Server(object):
                 logging.info("loaded {} domains from {}".format(len(tmpset), val["file"]))
 
     def load_from_hosts(self, request):
-        ip = self.match_domain_in_dict(request.q.qname.label, self.hosts)
-        if ip:
+        ips = self.match_domain_in_dict(request.q.qname.label, self.hosts)
+        if ips:
             # logging.debug("{} found in hosts".format(request.q.qname))
             reply = request.reply()
-            reply.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A(ip)))
+            for ip in ips:
+                reply.add_answer(RR(request.q.qname, QTYPE.A, ttl=60, rdata=A(ip)))
             return reply
         else:
             return None
@@ -124,9 +125,9 @@ class Server(object):
         If the domain is in target_dict, return the corresponding value, else return None
         '''
         try:
-            rv = tuple(map(bytes.decode, reversed(domain_tuple)))
+            rv = tuple(map(bytes.decode, domain_tuple))
             for l in range(1, depth):
-                k = rv[0:l]
+                k = rv[-l:]
                 if k in target_dict:
                     logging.debug("{} matched".format(k))
                     return target_dict[k]
