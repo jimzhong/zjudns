@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import time
+import os
 import sys
 import logging
 import configparser
@@ -19,7 +20,8 @@ logging.basicConfig(format='[%(levelname)s] %(message)s', level=logging.DEBUG)
 
 class Server(object):
 
-    def __init__(self, filename):
+    def __init__(self, directory, filename='dns.conf'):
+        os.chdir(directory)
         self.load_config(filename)
 
     def load_hosts_file(self, filename):
@@ -235,7 +237,8 @@ class Server(object):
             info = self.waiting.pop((reply.header.id, addr))
             reply.header.id = info[4]
             self.send_reply_to(reply, info[1])
-            if reply.header.rcode in (RCODE.NOERROR, RCODE.NXDOMAIN):
+            if info[3] > 0 and reply.header.rcode in (RCODE.NOERROR, RCODE.NXDOMAIN):
+                #only cache if TTL in config > 0
                 key = "dns:{}:{}".format(info[0].q.qname, info[0].q.qtype)
                 logging.debug("add {} to cache, ttl={}".format(key, info[3]))
                 self.redis.set(key, pickle.dumps(reply), ex=info[3])
@@ -264,11 +267,8 @@ class Server(object):
             # logging.debug(events)
             for fd, event in events:
                 if fd == self.server_sock.fileno():
-                    data, addr = self.server_sock.recvfrom(1024)
-                    # if self.limiter.consume(addr[0]):
+                    data, addr = self.server_sock.recvfrom(4096)
                     self.handle_client_request(data, addr)
-                    # else:
-                        # logging.warning("{} exceeded ratelimit".format(addr[0]))
 
                 for sock in self.query_sock_pool:
                     if sock.fileno() == fd:
@@ -281,7 +281,7 @@ class Server(object):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="A DNS relay")
-    parser.add_argument("-c", "--config", help="config file", required=True)
+    parser.add_argument("-d", "--directory", help="directory of config files", default='/etc/zjudns/')
     args = parser.parse_args()
-    server = Server(args.config)
+    server = Server(args.directory)
     server.serve_forever()
