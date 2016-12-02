@@ -76,6 +76,22 @@ class Server(object):
         self.redis_unixsocket = config['global']['unixsocket']
 
         self.upstreams = {}
+
+        def extract_servers(string):
+            '''
+            From "127.0.0.1#5353, 1.2.3.4#53"
+            To [("127.0.0.1", 5353), ("1.2.3.4", 53)]
+
+            '''
+            servers = []
+            if not string:
+                return servers
+            for addr in string.split(','):
+                ip = addr.split("#")[0].strip()
+                port = int(addr.split("#")[1])
+                servers.append((ip, port))
+            return servers
+
         for x in config.sections():
             if x != 'global':
                 self.upstreams[x] = {
@@ -83,12 +99,10 @@ class Server(object):
                     "ttl": int(config[x]['ttl']),
                     'timeout': int(config[x]['timeout'])
                     }
-                servers = []
-                for addr in config[x]['servers'].split(','):
-                    ip = addr.split("#")[0].strip()
-                    port = int(addr.split("#")[1])
-                    servers.append((ip, port))
-                self.upstreams[x]['servers'] = tuple(servers)
+                # primary servers
+                self.upstreams[x]['servers'] = tuple(extract_servers(config[x]['servers']))
+                # backup server
+                self.upstreams[x]['backups'] = tuple(extract_servers(config[x].get("backups", None)))
 
         self.domains = {}
         for name, val in self.upstreams.items():
