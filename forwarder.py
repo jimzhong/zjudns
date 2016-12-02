@@ -74,6 +74,7 @@ class Server(object):
         self.allowed_qtype = tuple(getattr(QTYPE, x) for x in map(str.strip, config['global']['allowed_qtype'].split(",")))
         self.server_port = int(config['global'].get('port', 1053))
         self.redis_unixsocket = config['global']['unixsocket']
+        self.max_cache_ttl = config['global'].get("max_cache_ttl", 3600 * 24 * 7)
 
         self.upstreams = {}
 
@@ -125,6 +126,15 @@ class Server(object):
 
     def load_from_cache(self, request):
         key = "dns:{}:{}".format(request.q.qname, request.q.qtype)
+        cached = self.redis.get(key)
+        if cached:
+            reply = pickle.loads(cached)
+            reply.header = request.reply().header
+            return reply
+        return None
+
+    def load_from_cache_failed(self, request):
+        key = "dns-fail:{}:{}".format(request.q.qname, request.q.qtype)
         cached = self.redis.get(key)
         if cached:
             reply = pickle.loads(cached)
@@ -229,11 +239,16 @@ class Server(object):
         now = time.time()
         for k, v in self.waiting.items():
             if now > v[2]:
-                fail = v[0].reply()
-                fail.header.id = v[4]
-                fail.header.rcode = RCODE.SERVFAIL
-                self.server_sock.sendto(fail.pack(), v[1])
-                logging.warning("{} timed out for {}".format(k, v[0].q.qname))
+                logging.warning("{} timed out for".format(k, v[0].q.qname))
+                resp = self.load_from_cache_failed(v[0])
+                if not resp:
+                    logging.warning("And not found in cache.")
+                    resp = v[0].reply()
+                    resp.header.id = v[4]
+                    resp.header.rcode = RCODE.SERVFAIL
+                else:
+                    logging.warning("But found in cache.")
+                self.server_sock.sendto(resp.pack(), v[1])
                 tmplist.append(k)
         for x in tmplist:
             self.waiting.pop(x)
@@ -255,7 +270,12 @@ class Server(object):
                 #only cache if TTL in config > 0
                 key = "dns:{}:{}".format(info[0].q.qname, info[0].q.qtype)
                 logging.debug("add {} to cache, ttl={}".format(key, info[3]))
-                self.redis.set(key, pickle.dumps(reply), ex=info[3])
+                dumped = pickle.dumps(reply)
+                self.redis.set(key, dumped, ex=info[3])
+                key = "dns-fail:{}:{}".format(info[0].q.qname, info[0].q.qtype)
+                logging.debug("add {} to cache, ttl={}".format(key, self.max_cache_ttl))
+                self.redis.set(key, dumped, ex=self.max_cache_ttl)
+
 
     def serve_forever(self, pool_size=10):
         self.redis = redis.StrictRedis(unix_socket_path=self.redis_unixsocket)
