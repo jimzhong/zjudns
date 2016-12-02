@@ -239,7 +239,7 @@ class Server(object):
         now = time.time()
         for k, v in self.waiting.items():
             if now > v[2]:
-                logging.warning("{} timed out for".format(k, v[0].q.qname))
+                logging.warning("{} timed out for {}".format(k, v[0].q.qname))
                 resp = self.load_from_cache_failed(v[0])
                 if not resp:
                     logging.warning("And not found in cache.")
@@ -266,15 +266,16 @@ class Server(object):
             info = self.waiting.pop((reply.header.id, addr))
             reply.header.id = info[4]
             self.send_reply_to(reply, info[1])
-            if info[3] > 0 and reply.header.rcode in (RCODE.NOERROR, RCODE.NXDOMAIN):
-                #only cache if TTL in config > 0
-                key = "dns:{}:{}".format(info[0].q.qname, info[0].q.qtype)
-                logging.debug("add {} to cache, ttl={}".format(key, info[3]))
+            if reply.header.rcode in (RCODE.NOERROR, RCODE.NXDOMAIN):
                 dumped = pickle.dumps(reply)
-                self.redis.set(key, dumped, ex=info[3])
                 key = "dns-fail:{}:{}".format(info[0].q.qname, info[0].q.qtype)
                 logging.debug("add {} to cache, ttl={}".format(key, self.max_cache_ttl))
                 self.redis.set(key, dumped, ex=self.max_cache_ttl)
+                if info[3] > 0:
+                    #only cache if TTL in config > 0
+                    key = "dns:{}:{}".format(info[0].q.qname, info[0].q.qtype)
+                    logging.debug("add {} to cache, ttl={}".format(key, info[3]))
+                    self.redis.set(key, dumped, ex=info[3])
 
 
     def serve_forever(self, pool_size=10):
