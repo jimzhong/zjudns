@@ -239,15 +239,14 @@ class Server(object):
         now = time.time()
         for k, v in self.waiting.items():
             if now > v[2]:
-                logging.warning("{} timed out for {}".format(k, v[0].q.qname))
+
                 resp = self.load_from_cache_failed(v[0])
                 if not resp:
-                    logging.warning("And not found in cache.")
                     resp = v[0].reply()
                     resp.header.id = v[4]
                     resp.header.rcode = RCODE.SERVFAIL
                 else:
-                    logging.warning("But found in cache.")
+                    logging.warning("{} timed out for {} and cache missed.".format(k, v[0].q.qname))
                 self.server_sock.sendto(resp.pack(), v[1])
                 tmplist.append(k)
         for x in tmplist:
