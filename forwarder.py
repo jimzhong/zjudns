@@ -245,8 +245,9 @@ class Server(object):
                     resp = v[0].reply()
                     resp.header.id = v[4]
                     resp.header.rcode = RCODE.SERVFAIL
-                else:
                     logging.warning("{} timed out for {} and cache missed.".format(k, v[0].q.qname))
+                else:
+                    logging.warning("{} timed out for {} but found in cache.".format(k, v[0].q.qname))
                 self.server_sock.sendto(resp.pack(), v[1])
                 tmplist.append(k)
         for x in tmplist:
