@@ -264,8 +264,14 @@ class Server(object):
 
         if (reply.header.id, addr) in self.waiting:
             info = self.waiting.pop((reply.header.id, addr))
+            if reply.header.rcode == RCODE.SERVFAIL:
+                logging.warning("{} sends SERVFAIL".format(addr))
+                resp = self.load_from_cache_failed(info[0])
+                if resp:
+                    reply = resp
             reply.header.id = info[4]
             self.send_reply_to(reply, info[1])
+            # only cache NOERROR and NXDOMAIN results
             if reply.header.rcode in (RCODE.NOERROR, RCODE.NXDOMAIN):
                 dumped = pickle.dumps(reply)
                 key = "dns-fail:{}:{}".format(info[0].q.qname, info[0].q.qtype)
